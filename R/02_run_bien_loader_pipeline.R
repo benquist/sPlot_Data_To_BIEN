@@ -107,7 +107,7 @@ ensure_columns <- function(dt, cols, default = NA_character_) {
 
 safe_read_tsv <- function(path) {
   if (!file.exists(path)) return(data.table())
-  fread(path, sep = "\t", na.strings = c("", "NA", "N/A"), showProgress = FALSE)
+  fread(path, sep = "\t", na.strings = c("", "NA", "N/A"), showProgress = FALSE, fill = TRUE)
 }
 
 write_tsv <- function(dt, path) {
@@ -227,6 +227,22 @@ main <- function() {
     "native_status_state_province", "native_status_county_parish",
     "is_introduced", "is_cultivated_observation"
   ))
+
+  # Force character type on all TNRS/resolution columns (fread may read all-NA cols as logical)
+  for (.col in c(
+    "scrubbed_family", "scrubbed_genus", "scrubbed_author", "scrubbed_taxonomic_status",
+    "tnrs_submitted_name", "tnrs_matched_name", "tnrs_taxon_id", "tnrs_authority",
+    "tnrs_match_method", "tnrs_name_changed", "taxon_resolution_status",
+    "country", "state_province", "county", "is_centroid",
+    "native_status", "native_status_reason", "native_status_country",
+    "native_status_state_province", "native_status_county_parish",
+    "is_introduced", "is_cultivated_observation"
+  )) {
+    if (.col %in% names(stg) && !is.character(stg[[.col]])) {
+      stg[, (.col) := as.character(get(.col))]
+    }
+  }
+  stg[, tnrs_match_score := suppressWarnings(as.numeric(tnrs_match_score))]
 
   stg[, tnrs_submit_key := fifelse(
     !is.na(scrubbed_species_binomial_splot) & trimws(scrubbed_species_binomial_splot) != "",
@@ -388,9 +404,9 @@ main <- function() {
   if (isTRUE(args$resume) && file.exists(gnrs_result_path)) {
     g <- safe_read_tsv(gnrs_result_path)
     if (nrow(g) > 0L) {
-      sc <- if ("country" %in% names(g)) trim_na(g$country) else rep(NA_character_, nrow(g))
-      ss <- if ("stateProvince" %in% names(g)) trim_na(g$stateProvince) else rep(NA_character_, nrow(g))
-      sy <- if ("county" %in% names(g)) trim_na(g$county) else rep(NA_character_, nrow(g))
+      sc <- if ("country_verbatim" %in% names(g)) trim_na(g$country_verbatim) else if ("country" %in% names(g)) trim_na(g$country) else rep(NA_character_, nrow(g))
+      ss <- if ("state_province_verbatim" %in% names(g)) trim_na(g$state_province_verbatim) else rep(NA_character_, nrow(g))
+      sy <- if ("county_parish_verbatim" %in% names(g)) trim_na(g$county_parish_verbatim) else rep(NA_character_, nrow(g))
       gnrs_done <- unique(paste0(fifelse(is.na(sc), "", sc), "\u001f", fifelse(is.na(ss), "", ss), "\u001f", fifelse(is.na(sy), "", sy)))
     }
   }
@@ -451,15 +467,14 @@ main <- function() {
       })
 
       if (batch_ok && nrow(out) > 0L) {
-        append_results(out, gnrs_result_path, key_cols = c("country", "stateProvince", "county"))
+        append_results(out, gnrs_result_path, key_cols = c("country_verbatim", "state_province_verbatim", "county_parish_verbatim"))
       }
 
       done_now <- uniqueN(c(gnrs_done, if (nrow(out) > 0L) {
-        paste0(
-          fifelse(is.na(trim_na(out$country)), "", trim_na(out$country)), "\u001f",
-          fifelse(is.na(trim_na(out$stateProvince)), "", trim_na(out$stateProvince)), "\u001f",
-          fifelse(is.na(trim_na(out$county)), "", trim_na(out$county))
-        )
+        cv <- if ("country_verbatim" %in% names(out)) trim_na(out$country_verbatim) else trim_na(out$country)
+        sv <- if ("state_province_verbatim" %in% names(out)) trim_na(out$state_province_verbatim) else rep(NA_character_, nrow(out))
+        yv <- if ("county_parish_verbatim" %in% names(out)) trim_na(out$county_parish_verbatim) else rep(NA_character_, nrow(out))
+        paste0(fifelse(is.na(cv), "", cv), "\u001f", fifelse(is.na(sv), "", sv), "\u001f", fifelse(is.na(yv), "", yv))
       } else character(0)))
       write_checkpoint(gnrs_checkpoint, "gnrs", done_now, nrow(gnrs_queue), nrow(gnrs_queue) - done_now)
       if (args$pause_seconds > 0) Sys.sleep(args$pause_seconds)
@@ -468,15 +483,23 @@ main <- function() {
 
   gnrs_res <- safe_read_tsv(gnrs_result_path)
   if (nrow(gnrs_res) > 0L) {
-    gnrs_res[, country := trim_na(country)]
-    gnrs_res[, stateProvince := trim_na(stateProvince)]
-    gnrs_res[, county := trim_na(county)]
+    # Actual GNRS response cols: country_verbatim, state_province_verbatim, county_parish_verbatim (submitted)
+    # and country, state_province, county_parish (matched). No stateProvince or county.
+    ensure_columns(gnrs_res, c("country_verbatim", "state_province_verbatim", "county_parish_verbatim",
+                               "country", "state_province", "county_parish"))
+    gnrs_res[, country_verbatim := trim_na(country_verbatim)]
+    gnrs_res[, state_province_verbatim := trim_na(state_province_verbatim)]
+    gnrs_res[, county_parish_verbatim := trim_na(county_parish_verbatim)]
 
-    gnrs_res[, country_matched_out := first_non_empty(.SD, c("Country_matched", "country_matched", "country")), .SDcols = names(gnrs_res)]
-    gnrs_res[, state_matched_out := first_non_empty(.SD, c("StateProvince_matched", "stateProvince_matched", "stateProvince")), .SDcols = names(gnrs_res)]
-    gnrs_res[, county_matched_out := first_non_empty(.SD, c("County_matched", "county_matched", "county")), .SDcols = names(gnrs_res)]
+    gnrs_res[, country_matched_out := first_non_empty(.SD, c("country", "Country_matched", "country_matched")), .SDcols = names(gnrs_res)]
+    gnrs_res[, state_matched_out := first_non_empty(.SD, c("state_province", "StateProvince_matched", "stateProvince_matched", "stateProvince")), .SDcols = names(gnrs_res)]
+    gnrs_res[, county_matched_out := first_non_empty(.SD, c("county_parish", "County_matched", "county_matched", "county")), .SDcols = names(gnrs_res)]
 
-    gnrs_res[, key := paste0(fifelse(is.na(country), "", country), "\u001f", fifelse(is.na(stateProvince), "", stateProvince), "\u001f", fifelse(is.na(county), "", county))]
+    gnrs_res[, key := paste0(
+      fifelse(is.na(country_verbatim), "", country_verbatim), "\u001f",
+      fifelse(is.na(state_province_verbatim), "", state_province_verbatim), "\u001f",
+      fifelse(is.na(county_parish_verbatim), "", county_parish_verbatim)
+    )]
     gnrs_res <- unique(gnrs_res, by = "key")
 
     stg[, gnrs_key := paste0(
