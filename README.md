@@ -9,15 +9,51 @@ The workflow is intentionally explicit and operationally auditable:
 3. Persist intermediate service outputs and checkpoints for resume/restart.
 4. Emit a final validated staging table for BIEN Data Loader ingestion.
 
+## Dataset Overview Report
+
+A standalone, scientist-readable report describing the sPlotOpen v2.0 source data — including an interactive Leaflet map of plot locations — is included at the repository root:
+
+- [splot_overview.Rmd](splot_overview.Rmd) — source R Markdown
+- [splot_overview.html](splot_overview.html) — pre-rendered self-contained HTML (open in a browser)
+
+The report covers:
+
+1. Dataset summary (plots, species×plot records, unique binomials, date range, contributing datasets).
+2. Geographic coverage with an interactive Leaflet viewer of plot locations (clustered by region, colored by biome where available).
+3. Temporal distribution of plot records.
+4. Biome and habitat composition.
+5. Trait coverage in the CWM/CWV table.
+6. Data-quality flags relevant to BIEN ingestion (coordinate uncertainty, null-island, missing taxonomy).
+
+### Re-rendering the report
+
+The report reads directly from the sPlotOpen archive. To re-render locally:
+
+1. Download the sPlotOpen v2.0 archive from the iDiv Data Repository (record 3474) and place the zip at `data/iDiv Data Repository_3474_v55__20260429.zip`. The archive is ~100 MB and is intentionally **not** committed to this repository (see `.gitignore`).
+2. Install the additional packages used by the report:
+
+   ```bash
+   Rscript -e "install.packages(c('rmarkdown','knitr','ggplot2','leaflet','RColorBrewer','scales','here'), repos='https://cloud.r-project.org')"
+   ```
+
+3. Render from the repository root:
+
+   ```bash
+   Rscript -e "rmarkdown::render('splot_overview.Rmd')"
+   ```
+
+The committed `splot_overview.html` is self-contained, so it can be opened directly without re-rendering.
+
 ## Repository Layout
 
+- `splot_overview.Rmd` / `splot_overview.html`: Dataset overview report with interactive geographic viewer (see above).
 - `R/`
   - `01_build_bien_staging.R`: Reads sPlot zip text files, applies base QA filters/flags, maps records to BIEN staging schema.
   - `02_run_bien_loader_pipeline.R`: Runs TNRS, GNRS, GVS, NSR batched validation and writes validated output.
 - `data/`
-  - Intended location for local data artifacts if you adapt paths.
+  - Intended location for the sPlotOpen source zip (not committed; see report section above).
 - `output/`
-  - Intended root for generated outputs.
+  - Intended root for generated outputs (TSVs are gitignored).
 - `output/validation/`
   - Validation service outputs, checkpoints, and failed batch queues.
 

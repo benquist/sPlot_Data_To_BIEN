@@ -1,0 +1,14 @@
+.DS_Store
+.Rhistory
+.Rproj.user/
+
+# Source archives (too large for GitHub; download separately into data/)
+data/*.zip
+
+# Knitr/RMarkdown render artifacts
+splot_overview_cache/
+splot_overview_files/
+
+# Pipeline outputs (regenerable)
+output/*.tsv
+output/validation/
