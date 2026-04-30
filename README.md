@@ -1,176 +1,176 @@
 # sPlot to BIEN Database Loading Workflow
 
-This repository contains a two-stage, service-backed pipeline that transforms sPlot Open data into a BIEN loader-ready staging table and then validates and enriches that table using BIEN relay services.
+This repository is the operational workflow for converting sPlot Open v2.0 plot data into a BIEN loader-ready validation pipeline. It is intended to be published as the project at `https://github.com/benquist/sPlot_Data_To_BIEN`.
 
-The workflow is intentionally explicit and operationally auditable:
+The workflow is designed for transparency, reproducibility, and end-to-end auditability:
 
-1. Build BIEN staging table from raw sPlot archive.
-2. Run staged records through TNRS, GNRS, GVS, and NSR in controlled API batches.
-3. Persist intermediate service outputs and checkpoints for resume/restart.
-4. Emit a final validated staging table for BIEN Data Loader ingestion.
+1. Build a BIEN-compatible staging table from raw sPlot archive data.
+2. Apply initial QA filters and data cleaning.
+3. Resolve taxonomic names, geography, coordinate validity, and native status via BIEN relay services.
+4. Emit a validated staging table with service provenance for BIEN ingest.
 
-## Dataset Overview Report
+## Project Goals and Intentions
 
-A standalone, scientist-readable report describing the sPlotOpen v2.0 source data — including an interactive Leaflet map of plot locations — is included at the repository root:
+The primary objectives of this project are:
 
-- [splot_overview.Rmd](splot_overview.Rmd) — source R Markdown
-- [splot_overview.html](splot_overview.html) — pre-rendered self-contained HTML (open in a browser)
+- Capture sPlot plot observation data in a BIEN-compatible staging schema.
+- Preserve original sPlot metadata and deliver clear lineage from source archive to validated records.
+- Use controlled batch validation through BIEN relay endpoints to avoid black-box transformation.
+- Keep intermediate service outputs and checkpoints so runs can resume or be audited later.
+- Support a transparent, manual companion report for dataset understanding and interpretation.
 
-The report covers:
+This repository is not meant to publish the raw sPlot archive itself. Instead, it stores:
 
-1. Dataset summary (plots, species×plot records, unique binomials, date range, contributing datasets).
-2. Geographic coverage with an interactive Leaflet viewer of plot locations (clustered by region, colored by biome where available).
-3. Temporal distribution of plot records.
-4. Biome and habitat composition.
-5. Trait coverage in the CWM/CWV table.
-6. Data-quality flags relevant to BIEN ingestion (coordinate uncertainty, null-island, missing taxonomy).
+- the ingestion and validation pipeline code,
+- a rendered summary report (`splot_overview.html`),
+- the source report (`splot_overview.Rmd`),
+- a README documenting the full workflow.
 
-### Re-rendering the report
+## High-level Workflow
 
-The report reads directly from the sPlotOpen archive. To re-render locally:
+### Stage 1: Build BIEN staging table
 
-1. Download the sPlotOpen v2.0 archive from the iDiv Data Repository (record 3474) and place the zip at `data/iDiv Data Repository_3474_v55__20260429.zip`. The archive is ~100 MB and is intentionally **not** committed to this repository (see `.gitignore`).
-2. Install the additional packages used by the report:
+Script: `R/01_build_bien_staging.R`
 
-   ```bash
-   Rscript -e "install.packages(c('rmarkdown','knitr','ggplot2','leaflet','RColorBrewer','scales','here'), repos='https://cloud.r-project.org')"
-   ```
+Key actions:
 
-3. Render from the repository root:
+- Reads sPlotOpen header and species×plot details from the source zip archive.
+- Joins the metadata and species files using `PlotObservationID`.
+- Filters records where species names are absent or non-binomial.
+- Filters records missing latitude or longitude.
+- Generates QA flags for coordinate uncertainty and null-island records.
+- Maps raw sPlot fields into a structured BIEN staging schema.
+- Writes:
+  - full staging table,
+  - balanced `resample_1_consensus == TRUE` subset,
+  - a unique TNRS names queue.
 
-   ```bash
-   Rscript -e "rmarkdown::render('splot_overview.Rmd')"
-   ```
+Intentional mapping details:
 
-The committed `splot_overview.html` is self-contained, so it can be opened directly without re-rendering.
+- `scrubbed_species_binomial` and `tnrs_submitted_name` are sourced from `Species`.
+- `verbatim_scientific_name` preserves the raw `Original_species` string.
+- `latitude` / `longitude` are preserved as reported by sPlot.
+- `dataset`, `datasource`, `dataowner`, and `collection_code` are retained for provenance.
+- `occurrenceID` is generated from plot ID, species name, and source row index.
+
+### Stage 2: Relay validation and enrichment
+
+Script: `R/02_run_bien_loader_pipeline.R`
+
+Key pipeline stages:
+
+1. TNRS name resolution
+2. GNRS geography standardization
+3. GVS geospatial validation
+4. NSR native/introduced/cultivated context
+
+The stage 2 pipeline is designed to merge relay outputs back into the original staging records while preserving provenance and checkpoint state.
+
+## Data Cleaning and Corrections
+
+### Filtering and QA in stage 1
+
+The project applies the following cleaning decisions before BIEN mapping:
+
+- Keep only records where `Species` looks like a binomial name.
+- Remove records with missing coordinates.
+- Flag `coord_uncertainty_flag` when `Location_uncertainty > 1000`.
+- Flag `null_island_flag` when both latitude and longitude are within 0.1° of zero.
+- Keep raw source archive names and coordinates for audit.
+- Do not automatically drop records with service failures: failures are persisted and can be rerun.
+
+### Naming and geographic reconciliation in stage 2
+
+Validation is intentionally split into separate service passes:
+
+- TNRS must resolve names before taxon-level checks are used.
+- GNRS standardizes country / state / county values before location-based native status lookups.
+- GVS checks whether reported lat/lon are centroids or otherwise suspicious.
+- NSR is only meaningful after taxon and geography resolution are available.
+
+### Correction philosophy
+
+This repository favors:
+
+- explicit flags over silent overwrites,
+- preserving the original source values alongside normalized fields,
+- treating relay enrichment as additive metadata rather than destructive replacement.
+
+## BIEN Mapping Details
+
+The staging schema is mapped to BIEN concepts as follows:
+
+- `scrubbed_species_binomial` = species name for TNRS / BIEN taxonomy.
+- `verbatim_scientific_name` = original species string from sPlot.
+- `latitude`, `longitude` = raw coordinates used for GVS and NSR.
+- `country`, `continent`, `biome` = source geography and biome context.
+- `plot_observation_id` = unique plot-level identifier from sPlot.
+- `dataset` = `sPlotOpen`.
+- `datasource` = `iDiv sPlotOpen v2.0`.
+- `collection_code` = `GIVD_ID`.
+- `basisOfRecord` = `HumanObservation`.
+
+Additional BIEN-compatible metadata retained for provenance:
+
+- `source_archive` = zip filename used for ingestion,
+- `source_row_index` = row ordinal from the tsv file join,
+- `verbatim_date_collected` and `year_collected`.
+
+## Report and Data Summary
+
+This repository includes a data summary report containing:
+
+- total plot records and species×plot observations,
+- unique binomials submitted to TNRS,
+- geographic coverage and plot distribution,
+- temporal coverage of record dates,
+- biome and habitat composition,
+- data quality flags such as coordinate uncertainty and null-island.
+
+### Report files included in this repo
+
+- `splot_overview.Rmd` — the source R Markdown analysis and visualization.
+- `splot_overview.html` — pre-rendered HTML with an interactive Leaflet map.
+
+### What the report summarizes
+
+- plot density across the sPlot dataset,
+- geographic coverage of plots,
+- counts of unique species and datasets,
+- data quality issues relevant to BIEN ingestion,
+- missing taxonomy and coordinate issues,
+- trait coverage in the sample-level mean trait table.
 
 ## Repository Layout
 
-- `splot_overview.Rmd` / `splot_overview.html`: Dataset overview report with interactive geographic viewer (see above).
-- `R/`
-  - `01_build_bien_staging.R`: Reads sPlot zip text files, applies base QA filters/flags, maps records to BIEN staging schema.
-  - `02_run_bien_loader_pipeline.R`: Runs TNRS, GNRS, GVS, NSR batched validation and writes validated output.
-- `data/`
-  - Intended location for the sPlotOpen source zip (not committed; see report section above).
-- `output/`
-  - Intended root for generated outputs (TSVs are gitignored).
-- `output/validation/`
-  - Validation service outputs, checkpoints, and failed batch queues.
+- `R/01_build_bien_staging.R` — stage 1 build and QA.
+- `R/02_run_bien_loader_pipeline.R` — stage 2 relay validation.
+- `splot_overview.Rmd` — dataset summary and QA report.
+- `splot_overview.html` — rendered dataset summary report.
+- `data/` — local archive input path only; raw zip is intentionally excluded.
+- `output/` — generated outputs and validation artifacts.
+- `.gitignore` — excludes raw data and generated TSV output.
 
-## Architecture and Processing Model
+## Running the workflow
 
-### Stage 1: Staging Build (R/01_build_bien_staging.R)
+### Step 1: Prepare the source archive
 
-Primary responsibilities:
-
-1. Read two files from the sPlot zip archive:
-   - `sPlotOpen_header(2).txt`
-   - `sPlotOpen_DT(1).txt`
-2. Select required columns only.
-3. Inner join on `PlotObservationID`.
-4. Apply row-level filters:
-   - species must be non-empty and appear binomial (contains a space)
-   - latitude and longitude must be present
-5. Create QA flags:
-   - `coord_uncertainty_flag` when location uncertainty exceeds 1000 m
-   - `null_island_flag` when absolute latitude and longitude are both below 0.1
-6. Map fields to BIEN-style staging columns.
-7. Build unique `occurrenceID` and enforce uniqueness.
-8. Write three output files:
-   - full staging table
-   - balanced subset based on `resample_1_consensus == TRUE`
-   - unique submitted names queue for TNRS batching
-
-Important implementation note:
-
-- This script contains hard-coded absolute defaults for zip input and output directory in the original source code that was copied unchanged.
-- If your local files differ, either:
-  - place files at the expected absolute paths, or
-  - adapt those constants in your own local branch.
-
-### Stage 2: Validation and Enrichment Pipeline (R/02_run_bien_loader_pipeline.R)
-
-Primary responsibilities:
-
-1. Read staging table (`--input`).
-2. Ensure required columns exist for downstream merges.
-3. TNRS pass (name resolution):
-   - queue unique submitted names
-   - call TNRS in batches
-   - persist `tnrs_results.tsv`
-   - merge matched names and taxonomic metadata into staging
-4. GNRS pass (geography resolution):
-   - queue unique geography tuples
-   - call GNRS in batches
-   - persist `gnrs_results.tsv`
-   - merge matched country/state/county values
-5. GVS pass (geospatial validation):
-   - queue unique coordinate pairs
-   - call GVS in batches
-   - persist `gvs_results.tsv`
-   - merge centroid flags
-6. NSR pass (native status resolution):
-   - queue unique taxon plus location tuples
-   - call NSR in batches
-   - persist `nsr_results.tsv`
-   - merge native status and introduced/cultivated outputs
-7. Persist final validated staging table:
-   - `splot_bien_staging_validated.tsv`
-8. Persist checkpoints and failed batches for operational restart.
-
-Service order is fixed and intentional:
-
-1. TNRS resolves names before native status checks.
-2. GNRS standardizes geography before NSR lookups.
-3. GVS independently validates coordinates and centroid behavior.
-4. NSR evaluates native/introduced/cultivated context with resolved taxon and geography.
-
-## Prerequisites
-
-### Software
-
-1. R version:
-   - R 4.1 or higher is recommended.
-2. System tools:
-   - `unzip` executable must be available on PATH for stage 1 streaming reads.
-3. Network access:
-   - outbound HTTPS access to relay endpoints used by stage 2.
-
-### R packages
-
-Install required packages:
+Download the sPlotOpen v2.0 archive and place it at the expected path:
 
 ```bash
-Rscript -e "install.packages(c('data.table','lubridate','httr','jsonlite'), repos='https://cloud.r-project.org')"
+mkdir -p data
+cp "/path/to/iDiv Data Repository_3474_v55__20260429.zip" data/
 ```
 
-Package usage by script:
-
-- `01_build_bien_staging.R`: `data.table`, `lubridate`
-- `02_run_bien_loader_pipeline.R`: `data.table`, `httr`, `jsonlite`
-
-## Run Commands From Repository Root
-
-Run all commands from:
-
-```bash
-cd /Users/brianjenquist/VSCode/sPlot_BIENdb_Loading
-```
-
-### 1) Build staging table
+### Step 2: Build the staging table
 
 ```bash
 Rscript R/01_build_bien_staging.R
 ```
 
-Default behavior:
+This creates the staging table and TNRS unique-name queue. Note that the current script contains absolute `ZIP` and `OUTPUT_DIR` defaults; adapt those values locally if needed.
 
-- Reads zip from the script's hard-coded `ZIP` absolute path.
-- Writes outputs to the script's hard-coded `OUTPUT_DIR` absolute path.
-
-### 2) Run TNRS -> GNRS -> GVS -> NSR pipeline
-
-Example using explicit paths in this repository:
+### Step 3: Run the BIEN relay validation pipeline
 
 ```bash
 Rscript R/02_run_bien_loader_pipeline.R \
@@ -181,155 +181,10 @@ Rscript R/02_run_bien_loader_pipeline.R \
   --gnrs_batch_size=1000 \
   --gvs_batch_size=2000 \
   --nsr_batch_size=500 \
-  --max_retries=5 \
-  --retry_base_seconds=5 \
-  --timeout_seconds=120 \
-  --resume=TRUE \
-  --pause_seconds=0.25
+  --resume=TRUE
 ```
 
-## Full CLI Argument Documentation (R/02_run_bien_loader_pipeline.R)
-
-All arguments are passed as `--key=value`.
-
-- `--input`
-  - Type: path string
-  - Default: `/Users/brianjenquist/VSCode/splot-open-data/output/splot_bien_staging_full.tsv`
-  - Meaning: input staging TSV to validate and enrich.
-
-- `--output_dir`
-  - Type: path string
-  - Default: `/Users/brianjenquist/VSCode/splot-open-data/output`
-  - Meaning: root output directory for validated table and validation artifacts.
-
-- `--validation_dir`
-  - Type: path string or empty
-  - Default: `NA` in parser, then resolved to `<output_dir>/validation`
-  - Meaning: directory that stores service result tables, checkpoints, failed batches.
-
-- `--tnrs_batch_size`
-  - Type: integer
-  - Default: `500`
-  - Meaning: number of unique names per TNRS request batch.
-
-- `--gnrs_batch_size`
-  - Type: integer
-  - Default: `1000`
-  - Meaning: number of unique geography tuples per GNRS request batch.
-
-- `--gvs_batch_size`
-  - Type: integer
-  - Default: `2000`
-  - Meaning: number of unique coordinate pairs per GVS request batch.
-
-- `--nsr_batch_size`
-  - Type: integer
-  - Default: `500`
-  - Meaning: number of unique taxon+location tuples per NSR request batch.
-
-- `--max_retries`
-  - Type: integer
-  - Default: `5`
-  - Meaning: max retries per batch for retryable failures (network, 429, 5xx).
-
-- `--retry_base_seconds`
-  - Type: numeric
-  - Default: `5`
-  - Meaning: exponential backoff base seconds.
-  - Effective wait progression per attempt uses `base * 2^(attempt-1)`.
-
-- `--timeout_seconds`
-  - Type: integer
-  - Default: `120`
-  - Meaning: per-request timeout applied to service calls.
-
-- `--resume`
-  - Type: logical (`TRUE/FALSE`, also accepts yes/no style tokens)
-  - Default: `TRUE`
-  - Meaning:
-    - `TRUE`: load existing `*_results.tsv`, skip already completed queue keys.
-    - `FALSE`: process as fresh run using current queue state.
-
-- `--pause_seconds`
-  - Type: numeric
-  - Default: `0.25`
-  - Meaning: sleep between batches for service politeness and reduced burst pressure.
-
-Parsing behavior details:
-
-- Unknown `--flag` without `=` is interpreted as `TRUE` for that key.
-- Numeric parsing falls back to script defaults if invalid values are supplied.
-- Boolean parsing accepts common true/false tokens.
-
-## Expected Output Files and Interpretation
-
-### Stage 1 outputs
-
-- `splot_bien_staging_full.tsv`
-  - Full staging table after filters and mapping.
-- `splot_bien_staging_balanced.tsv`
-  - Subset where `resample_1_consensus == TRUE`.
-- `splot_unique_names_for_tnrs.tsv`
-  - Unique submitted names plus count per name for TNRS queueing.
-
-### Stage 2 outputs
-
-Main output:
-
-- `splot_bien_staging_validated.tsv`
-  - Final enriched staging table after TNRS, GNRS, GVS, NSR merges.
-
-Validation directory outputs (`output/validation` by default):
-
-- `tnrs_results.tsv`
-  - Raw or flattened TNRS batch responses keyed by submitted name.
-- `gnrs_results.tsv`
-  - Raw or flattened GNRS batch responses keyed by geography tuple.
-- `gvs_results.tsv`
-  - Raw or flattened GVS batch responses keyed by submitted coordinate pair.
-- `nsr_results.tsv`
-  - Raw or flattened NSR batch responses keyed by taxon and geography.
-
-Checkpoints:
-
-- `tnrs_checkpoint.tsv`
-- `gnrs_checkpoint.tsv`
-- `gvs_checkpoint.tsv`
-- `nsr_checkpoint.tsv`
-
-Checkpoint meaning:
-
-- Tracks processed count, total queue size, and remaining count with timestamp.
-
-Failed batch queues:
-
-- `output/validation/failed_batches/tnrs_failed_batch_XXXX.tsv`
-- `output/validation/failed_batches/gnrs_failed_batch_XXXX.tsv`
-- `output/validation/failed_batches/gvs_failed_batch_XXXX.tsv`
-- `output/validation/failed_batches/nsr_failed_batch_XXXX.tsv`
-
-Failed batch meaning:
-
-- Captures queue items that were not resolved successfully after retry limits.
-- Supports targeted rerun or incident triage.
-
-## Troubleshooting
-
-### HTTP 429 (rate limit)
-
-Symptoms:
-
-- Logs show `HTTP 429` with retry lines.
-
-Actions:
-
-1. Reduce pressure:
-   - lower batch sizes
-   - increase `pause_seconds`
-2. Keep `resume=TRUE` to avoid reprocessing completed keys.
-3. Re-run command after cooldown.
-
-Recommended conservative settings:
+### Recommended conservative settings
 
 ```bash
 Rscript R/02_run_bien_loader_pipeline.R \
@@ -344,145 +199,52 @@ Rscript R/02_run_bien_loader_pipeline.R \
   --resume=TRUE
 ```
 
-### Service timeout or transient network failure
+## Validation artifact semantics
 
-Symptoms:
+The stage 2 pipeline writes persistent artifacts so the exact state of each run is inspectable.
 
-- Network errors, timeout messages, 5xx responses.
+- `tnrs_results.tsv`, `gnrs_results.tsv`, `gvs_results.tsv`, `nsr_results.tsv`
+  - contain accumulated service responses.
+- `output/validation/failed_batches/`
+  - stores any batches that failed after retries.
+- checkpoint files record processed counts and remaining queue size.
 
-Actions:
+## Data provenance and audit
 
-1. Increase `timeout_seconds`.
-2. Increase `max_retries` and optionally `retry_base_seconds`.
-3. Re-run with `resume=TRUE`.
-4. Inspect failed batches under `output/validation/failed_batches`.
+This repository emphasizes reproducibility by:
 
-### Missing columns in input staging table
+- preserving raw sPlot source values,
+- writing explicit service result tables,
+- flagging records that are uncertain or out-of-scope,
+- making every validation stage restartable.
 
-Symptoms:
+## Notes on pushing to GitHub
 
-- Downstream merges or queue construction produce sparse outputs.
+This repo is intended to be pushed to `https://github.com/benquist/sPlot_Data_To_BIEN`.
 
-Notes:
-
-- Script attempts to add many expected columns when absent.
-- However, core fields still need meaningful values for best results:
-  - species name fields for TNRS and NSR
-  - coordinate fields for GVS
-  - geography fields for GNRS and NSR
-
-Actions:
-
-1. Confirm stage 1 output integrity.
-2. Confirm delimiter is tab and file is not corrupted.
-3. Validate required columns exist and contain non-empty values.
-
-### Restart and resume behavior
-
-`resume=TRUE` behavior:
-
-1. Existing `*_results.tsv` are loaded.
-2. Queue keys already present in prior results are skipped.
-3. Checkpoints are continuously updated.
-4. Failed batches remain available for audit.
-
-`resume=FALSE` behavior:
-
-1. Queue is treated as fresh in-memory workload.
-2. Existing result files are not automatically deleted; if you need clean artifacts, remove old outputs manually before rerun.
-
-## Data, Provenance, and Audit Expectations
-
-Operational provenance goals:
-
-1. Every validated row should be traceable to original staging record context.
-2. Every service enrichment should be reproducible from persisted service result files.
-3. Every run should preserve enough metadata to explain acceptance, rejection, or unresolved records.
-
-Important audit fields from staging and pipeline:
-
-- Source traceability:
-  - `source_row_index`
-  - `source_archive`
-  - `plot_observation_id`
-  - `occurrenceID`
-- Taxonomy and name-resolution traceability:
-  - `tnrs_submitted_name`
-  - `tnrs_matched_name`
-  - `tnrs_taxon_id`
-  - `tnrs_authority`
-  - `tnrs_match_score`
-  - `tnrs_match_method`
-  - `tnrs_name_changed`
-  - `taxon_resolution_status`
-- Geography and coordinate QA:
-  - `latitude`, `longitude`
-  - `location_uncertainty_m`
-  - `coord_uncertainty_flag`
-  - `null_island_flag`
-  - `is_centroid`
-- Native status and ecological context:
-  - `native_status`
-  - `native_status_reason`
-  - `native_status_country`
-  - `native_status_state_province`
-  - `native_status_county_parish`
-  - `is_introduced`
-  - `is_cultivated_observation`
-
-## Relationship to BIEN Data Loader and BIEN Staging
-
-Conceptual mapping:
-
-1. This repository creates and enriches a BIEN-compatible staging table.
-2. Stage 1 constructs the base table from sPlot source rows.
-3. Stage 2 enriches that table with external resolver outputs.
-4. The final table is ready for BIEN Data Loader import workflow and review.
-
-Pipeline role separation:
-
-- Here: deterministic batch processing, service calls, and artifact persistence.
-- BIEN Data Loader: interactive review, additional QA workflows, and load operations into BIEN-managed structures.
-
-Staging compatibility intent:
-
-- Column naming and enrichment fields are aligned with expected BIEN loader staging semantics (taxonomy resolution metadata, geographic normalization, and native status context).
-
-## End-to-End Example Command Block
-
-Run from repository root:
+If you want to preserve the original upstream remote while adding the new remote, use:
 
 ```bash
-cd /Users/brianjenquist/VSCode/sPlot_BIENdb_Loading
+git remote add splot_bien_old https://github.com/benquist/sPlot_BIENdb_Loading.git
+``` 
 
-# 1) Build staging table
-Rscript R/01_build_bien_staging.R
-
-# 2) Validate and enrich through TNRS -> GNRS -> GVS -> NSR
-Rscript R/02_run_bien_loader_pipeline.R \
-  --input=output/splot_bien_staging_full.tsv \
-  --output_dir=output \
-  --validation_dir=output/validation \
-  --tnrs_batch_size=500 \
-  --gnrs_batch_size=1000 \
-  --gvs_batch_size=2000 \
-  --nsr_batch_size=500 \
-  --max_retries=5 \
-  --retry_base_seconds=5 \
-  --timeout_seconds=120 \
-  --resume=TRUE \
-  --pause_seconds=0.25
-
-# 3) Verify final output exists
-ls -lh output/splot_bien_staging_validated.tsv output/validation
-```
-
-## Minimal Validation Check
-
-From repository root, parse both scripts:
+Then push the current branch to the new remote:
 
 ```bash
-Rscript -e "parse(file='R/01_build_bien_staging.R'); parse(file='R/02_run_bien_loader_pipeline.R')"
+git remote set-url origin https://github.com/benquist/sPlot_Data_To_BIEN.git
+
+git push -u origin master
 ```
 
-If parsing succeeds, R exits with status code 0 and no parse error.
+## Important caveats
+
+- The repo does not include the sPlotOpen archive itself.
+- Absolute file paths in the stage 1 script must be updated for different local layouts.
+- Downstream enrichment depends on live BIEN relay services.
+- The current HTML report is pre-rendered and may need rerendering if source data paths change.
+
+## Contact and provenance
+
+Source dataset: Sabatini et al. 2021, Global Ecology and Biogeography; iDiv sPlotOpen v2.0.
+
+If this repository is used for production BIEN ingestion, verify the output staging table against BIEN loader expectations and keep all validation artifacts with the submission.
