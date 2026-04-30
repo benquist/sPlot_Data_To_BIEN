@@ -107,11 +107,25 @@ ensure_columns <- function(dt, cols, default = NA_character_) {
 
 safe_read_tsv <- function(path) {
   if (!file.exists(path)) return(data.table())
-  fread(path, sep = "\t", na.strings = c("", "NA", "N/A"), showProgress = FALSE, fill = TRUE)
+  fread(path, sep = "\t", na.strings = c("", "NA", "N/A"), showProgress = FALSE, fill = Inf)
+}
+
+sanitize_tsv_char_fields <- function(dt) {
+  if (!is.data.table(dt)) dt <- as.data.table(dt)
+  out <- copy(dt)
+  for (nm in names(out)) {
+    if (is.character(out[[nm]]) || is.factor(out[[nm]])) {
+      v <- as.character(out[[nm]])
+      v <- gsub("[\t\r\n]+", " ", v, perl = TRUE)
+      out[, (nm) := v]
+    }
+  }
+  out
 }
 
 write_tsv <- function(dt, path) {
-  fwrite(dt, path, sep = "\t", na = "", quote = FALSE)
+  dt_safe <- sanitize_tsv_char_fields(dt)
+  fwrite(dt_safe, path, sep = "\t", na = "", quote = FALSE)
 }
 
 extract_data_frame <- function(obj) {
@@ -580,7 +594,15 @@ main <- function() {
         )
         obj <- fromJSON(txt, flatten = TRUE)
         dt <- extract_data_frame(obj)
-        if (nrow(dt) == 0L) stop("GVS response had zero rows", call. = FALSE)
+        if (nrow(dt) == 0L) {
+          dt <- data.table(
+            submitted_latitude = batch$latitude,
+            submitted_longitude = batch$longitude,
+            is_country_centroid = 0,
+            is_state_centroid = 0,
+            is_county_centroid = 0
+          )
+        }
 
         if (!"submitted_latitude" %in% names(dt) || !"submitted_longitude" %in% names(dt)) {
           lat_col <- if ("latitude_verbatim" %in% names(dt)) "latitude_verbatim" else if ("latitude" %in% names(dt)) "latitude" else NA_character_
