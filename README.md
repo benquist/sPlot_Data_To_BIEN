@@ -199,6 +199,8 @@ Rscript R/02_run_bien_loader_pipeline.R \
   --resume=TRUE
 ```
 
+GVS note: the loader now adaptively splits retryable GVS timeout batches into smaller sub-batches instead of treating the whole batch as a hard failure when the relay times out on larger coordinate groups.
+
 ### Step 4: Restart or ensure monitoring jobs are running
 
 ```bash

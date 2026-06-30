@@ -4,6 +4,11 @@ Tracks prompts that create or modify code, scripts, or outputs in splot-open-dat
 
 ## Entries
 
+5. Date: 2026-06-30
+Prompt: Fix the underlying GVS relay timeout behavior for batches like 299 and 300 rather than only surfacing the stall.
+Source session: current workspace session
+Outcome: Replayed failed GVS batch 299 against the live relay and verified size-dependent behavior: 50-row requests timed out while 25-row and smaller requests succeeded. Updated R/02_run_bien_loader_pipeline.R to recursively split retryable timeout-sized GVS batches into smaller sub-batches, retained failed-batch writeback for non-recoverable cases, and documented the adaptive split behavior in README.md.
+
 4. Date: 2026-06-30
 Prompt: Audit why GVS checkpoint counts are not advancing even though batches are still being attempted; inspect failed-batch artifacts for 299 and 300; harden launcher and monitoring so stalled checkpoints are flagged automatically.
 Source session: current workspace session

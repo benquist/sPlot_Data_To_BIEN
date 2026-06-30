@@ -15,6 +15,11 @@ log_msg <- function(...) {
   message(format(Sys.time(), "%Y-%m-%d %H:%M:%S"), " | ", paste(..., collapse = " "))
 }
 
+is_retryable_timeout <- function(msg) {
+  x <- tolower(as.character(msg))
+  grepl("timed out|timeout|http 429|http 5[0-9][0-9]|upstream unreachable|network error", x)
+}
+
 parse_args <- function(argv) {
   defaults <- list(
     input = "/Users/brianjenquist/VSCode/splot-open-data/output/splot_bien_staging_full.tsv",
@@ -202,6 +207,75 @@ append_results <- function(new_dt, result_path, key_cols) {
   }
   write_tsv(all_dt, result_path)
   invisible(all_dt)
+}
+
+run_gvs_batch <- function(batch, label, args) {
+  batch_n <- nrow(batch)
+  payload_data <- lapply(seq_len(batch_n), function(j) c(batch$latitude[j], batch$longitude[j]))
+  payload <- toJSON(
+    list(opts = list(mode = "resolve"), data = payload_data),
+    auto_unbox = TRUE
+  )
+
+  txt <- post_with_retry(
+    url = GVS_URL,
+    payload = payload,
+    max_retries = args$max_retries,
+    retry_base_seconds = args$retry_base_seconds,
+    timeout_seconds = args$timeout_seconds,
+    service_name = "GVS",
+    batch_label = label
+  )
+  obj <- fromJSON(txt, flatten = TRUE)
+  dt <- extract_data_frame(obj)
+  if (nrow(dt) == 0L) {
+    dt <- data.table(
+      submitted_latitude = batch$latitude,
+      submitted_longitude = batch$longitude,
+      is_country_centroid = 0,
+      is_state_centroid = 0,
+      is_county_centroid = 0
+    )
+  }
+
+  if (!"submitted_latitude" %in% names(dt) || !"submitted_longitude" %in% names(dt)) {
+    lat_col <- if ("latitude_verbatim" %in% names(dt)) "latitude_verbatim" else if ("latitude" %in% names(dt)) "latitude" else NA_character_
+    lon_col <- if ("longitude_verbatim" %in% names(dt)) "longitude_verbatim" else if ("longitude" %in% names(dt)) "longitude" else NA_character_
+    if (!is.na(lat_col) && !is.na(lon_col)) {
+      dt[, submitted_latitude := suppressWarnings(as.numeric(trim_na(get(lat_col))))]
+      dt[, submitted_longitude := suppressWarnings(as.numeric(trim_na(get(lon_col))))]
+    } else if (nrow(dt) == nrow(batch)) {
+      dt[, submitted_latitude := batch$latitude]
+      dt[, submitted_longitude := batch$longitude]
+    }
+  }
+
+  dt[, gvs_timestamp_utc := format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")]
+  dt
+}
+
+resolve_gvs_batch <- function(batch, label, args, failed_dir, batch_index) {
+  tryCatch(
+    run_gvs_batch(batch, label, args),
+    error = function(e) {
+      msg <- conditionMessage(e)
+      can_split <- nrow(batch) > 1L && is_retryable_timeout(msg)
+      if (can_split) {
+        split_point <- ceiling(nrow(batch) / 2)
+        left <- batch[seq_len(split_point)]
+        right <- batch[(split_point + 1L):nrow(batch)]
+        log_msg("GVS", label, "retrying via split", split_point, "+", nrow(batch) - split_point)
+        left_out <- resolve_gvs_batch(left, paste0(label, " [a]"), args, failed_dir, batch_index)
+        right_out <- resolve_gvs_batch(right, paste0(label, " [b]"), args, failed_dir, batch_index)
+        return(rbindlist(list(left_out, right_out), fill = TRUE, use.names = TRUE))
+      }
+
+      log_msg("GVS", label, "FAILED:", msg)
+      failed_path <- file.path(failed_dir, sprintf("gvs_failed_batch_%04d.tsv", batch_index))
+      write_tsv(batch, failed_path)
+      stop(e)
+    }
+  )
 }
 
 write_checkpoint <- function(path, service, processed, total, remaining) {
@@ -578,54 +652,11 @@ main <- function() {
       label <- paste0("batch ", i, "/", length(gvs_batches), " (n=", batch_n, ")")
       log_msg("GVS", label)
 
-      payload_data <- lapply(seq_len(batch_n), function(j) c(batch$latitude[j], batch$longitude[j]))
-      payload <- toJSON(
-        list(opts = list(mode = "resolve"), data = payload_data),
-        auto_unbox = TRUE
-      )
-
       batch_ok <- TRUE
       out <- tryCatch({
-        txt <- post_with_retry(
-          url = GVS_URL,
-          payload = payload,
-          max_retries = args$max_retries,
-          retry_base_seconds = args$retry_base_seconds,
-          timeout_seconds = args$timeout_seconds,
-          service_name = "GVS",
-          batch_label = label
-        )
-        obj <- fromJSON(txt, flatten = TRUE)
-        dt <- extract_data_frame(obj)
-        if (nrow(dt) == 0L) {
-          dt <- data.table(
-            submitted_latitude = batch$latitude,
-            submitted_longitude = batch$longitude,
-            is_country_centroid = 0,
-            is_state_centroid = 0,
-            is_county_centroid = 0
-          )
-        }
-
-        if (!"submitted_latitude" %in% names(dt) || !"submitted_longitude" %in% names(dt)) {
-          lat_col <- if ("latitude_verbatim" %in% names(dt)) "latitude_verbatim" else if ("latitude" %in% names(dt)) "latitude" else NA_character_
-          lon_col <- if ("longitude_verbatim" %in% names(dt)) "longitude_verbatim" else if ("longitude" %in% names(dt)) "longitude" else NA_character_
-          if (!is.na(lat_col) && !is.na(lon_col)) {
-            dt[, submitted_latitude := suppressWarnings(as.numeric(trim_na(get(lat_col))))]
-            dt[, submitted_longitude := suppressWarnings(as.numeric(trim_na(get(lon_col))))]
-          } else if (nrow(dt) == nrow(batch)) {
-            dt[, submitted_latitude := batch$latitude]
-            dt[, submitted_longitude := batch$longitude]
-          }
-        }
-
-        dt[, gvs_timestamp_utc := format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")]
-        dt
+        resolve_gvs_batch(batch, label, args, failed_dir, i)
       }, error = function(e) {
         batch_ok <<- FALSE
-        log_msg("GVS", label, "FAILED:", conditionMessage(e))
-        failed_path <- file.path(failed_dir, sprintf("gvs_failed_batch_%04d.tsv", i))
-        write_tsv(batch, failed_path)
         data.table()
       })
 
