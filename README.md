@@ -199,6 +199,18 @@ Rscript R/02_run_bien_loader_pipeline.R \
   --resume=TRUE
 ```
 
+### Step 4: Restart or ensure monitoring jobs are running
+
+```bash
+bash scripts/restart_monitoring_jobs.sh
+```
+
+If you want monitoring processes restarted cleanly after code changes:
+
+```bash
+bash scripts/restart_monitoring_jobs.sh --restart --stall_minutes=20
+```
+
 ## Validation artifact semantics
 
 The stage 2 pipeline writes persistent artifacts so the exact state of each run is inspectable.
@@ -208,6 +220,7 @@ The stage 2 pipeline writes persistent artifacts so the exact state of each run 
 - `output/validation/failed_batches/`
   - stores any batches that failed after retries.
 - checkpoint files record processed counts and remaining queue size.
+- live monitoring now flags a service as `STALLED` when processed counts stop advancing past the configured threshold.
 
 ## Data provenance and audit
 

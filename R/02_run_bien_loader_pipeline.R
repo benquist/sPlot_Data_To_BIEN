@@ -338,6 +338,7 @@ main <- function() {
       }
 
       done_now <- length(unique(c(tnrs_done, unique(trim_na(out$Name_submitted)))))
+      tnrs_done <- unique(c(tnrs_done, unique(trim_na(out$Name_submitted))))
       write_checkpoint(tnrs_checkpoint, "tnrs", done_now, nrow(tnrs_queue), nrow(tnrs_queue) - done_now)
       if (args$pause_seconds > 0) Sys.sleep(args$pause_seconds)
     }
@@ -484,12 +485,14 @@ main <- function() {
         append_results(out, gnrs_result_path, key_cols = c("country_verbatim", "state_province_verbatim", "county_parish_verbatim"))
       }
 
-      done_now <- uniqueN(c(gnrs_done, if (nrow(out) > 0L) {
+      gnrs_batch_done <- if (nrow(out) > 0L) {
         cv <- if ("country_verbatim" %in% names(out)) trim_na(out$country_verbatim) else trim_na(out$country)
         sv <- if ("state_province_verbatim" %in% names(out)) trim_na(out$state_province_verbatim) else rep(NA_character_, nrow(out))
         yv <- if ("county_parish_verbatim" %in% names(out)) trim_na(out$county_parish_verbatim) else rep(NA_character_, nrow(out))
         paste0(fifelse(is.na(cv), "", cv), "\u001f", fifelse(is.na(sv), "", sv), "\u001f", fifelse(is.na(yv), "", yv))
-      } else character(0)))
+      } else character(0)
+      gnrs_done <- unique(c(gnrs_done, gnrs_batch_done))
+      done_now <- uniqueN(gnrs_done)
       write_checkpoint(gnrs_checkpoint, "gnrs", done_now, nrow(gnrs_queue), nrow(gnrs_queue) - done_now)
       if (args$pause_seconds > 0) Sys.sleep(args$pause_seconds)
     }
@@ -630,12 +633,14 @@ main <- function() {
         append_results(out, gvs_result_path, key_cols = c("submitted_latitude", "submitted_longitude"))
       }
 
-      done_now <- uniqueN(c(gvs_done, if (nrow(out) > 0L) {
+      gvs_batch_done <- if (nrow(out) > 0L) {
         olat <- suppressWarnings(as.numeric(trim_na(out$submitted_latitude)))
         olon <- suppressWarnings(as.numeric(trim_na(out$submitted_longitude)))
         ok <- !is.na(olat) & !is.na(olon)
         paste0(sprintf("%.8f", olat[ok]), "\u001f", sprintf("%.8f", olon[ok]))
-      } else character(0)))
+      } else character(0)
+      gvs_done <- unique(c(gvs_done, gvs_batch_done))
+      done_now <- uniqueN(gvs_done)
       write_checkpoint(gvs_checkpoint, "gvs", done_now, nrow(gvs_queue), nrow(gvs_queue) - done_now)
       if (args$pause_seconds > 0) Sys.sleep(args$pause_seconds)
     }
@@ -801,7 +806,7 @@ main <- function() {
         append_results(out, nsr_result_path, key_cols = c("taxon", "country", "state_province", "county_parish"))
       }
 
-      done_now <- uniqueN(c(nsr_done, if (nrow(out) > 0L) {
+      nsr_batch_done <- if (nrow(out) > 0L) {
         tax_col <- if ("taxon" %in% names(out)) "taxon" else if ("species" %in% names(out)) "species" else NA_character_
         st_col <- if ("state_province" %in% names(out)) "state_province" else if ("stateProvince" %in% names(out)) "stateProvince" else NA_character_
         ct_col <- if ("county_parish" %in% names(out)) "county_parish" else if ("county" %in% names(out)) "county" else NA_character_
@@ -813,7 +818,9 @@ main <- function() {
             fifelse(is.na(trim_na(out[[ct_col]])), "", trim_na(out[[ct_col]]))
           )
         } else character(0)
-      } else character(0)))
+      } else character(0)
+      nsr_done <- unique(c(nsr_done, nsr_batch_done))
+      done_now <- uniqueN(nsr_done)
       write_checkpoint(nsr_checkpoint, "nsr", done_now, nrow(nsr_queue), nrow(nsr_queue) - done_now)
       if (args$pause_seconds > 0) Sys.sleep(args$pause_seconds)
     }
